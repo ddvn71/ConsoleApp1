@@ -42,6 +42,10 @@ namespace NinjaSchoolConsoleTool
         // Hướng đi quét được từ OCR: 0=Random, 1=Trái, 2=Trái Dưới, 3=Trên, 4=Phải, 5=Phải Dưới, 6=Phía Dưới, 7=Trái Trên, 8=Phải Trên
         private static int nextDirection = 0;
 
+        // BỘ NHỚ LƯU LỊCH SỬ CHỐNG KẸT ĐỊA HÌNH 3 LẦN
+        private static int previousDirection = -1;
+        private static int sameDirectionCount = 0;
+
         // ĐỐI TƯỢNG KHÓA LUỒNG - ĐẢM BẢO AN TOÀN TRÊN .NET 10
         private static readonly object _consoleLock = new object();
 
@@ -122,7 +126,7 @@ namespace NinjaSchoolConsoleTool
             }
 
             // Danh sách ảnh mẫu phục vụ chu trình cốt lõi
-            string[] requiredImages = { "hanh_trang.png", "su_dung.png", "su_dung2.png", "xeng_dao.png", "ok_final.png", "dung_tui.png", "dong_dong.png" };
+            string[] requiredImages = { "hanh_trang.png", "su_dung.png", "su_dung2.png", "xeng_dao.png", "ben_trai.png", "ben_trai_phia_duoi.png", "ben_tren.png", "ben_phai.png", "ben_phai_phia_duoi.png", "ok_final.png", "dung_tui.png", "dong_dong.png" };
             foreach (string img in requiredImages)
             {
                 string path = Path.Combine(imageFolder, img);
@@ -135,14 +139,13 @@ namespace NinjaSchoolConsoleTool
 
         #endregion
 
-        #region Vòng Lặp Auto Chính (Main Flow)
+        #region Vòng Lặp Auto Chính (Main Flow - Phase A & Phase B)
 
         private static async Task StartAutoLoop(CancellationToken token)
         {
-            string screenPath = "temp_screen.png";
-
             // Đường dẫn hình ảnh mẫu
             string bagTemplate = Path.Combine(imageFolder, "hanh_trang.png");
+            string mapTemplate2 = Path.Combine(imageFolder, "ban_do_kho_bao2.png"); // Bản đồ khởi đầu của bạn
             string shovelTemplate = Path.Combine(imageFolder, "xeng_dao.png");
             string useTemplate1 = Path.Combine(imageFolder, "su_dung.png");
             string useTemplate2 = Path.Combine(imageFolder, "su_dung2.png");
@@ -156,228 +159,287 @@ namespace NinjaSchoolConsoleTool
             {
                 token.ThrowIfCancellationRequested();
 
-                // Ghi đè trạng thái hệ thống bằng 2 dòng thông tin
-                WriteStatus("Đang chụp màn hình giả lập...", "Chuẩn bị chạy vòng lặp chính.");
-                CaptureScreen(screenPath);
-
-                if (!File.Exists(screenPath))
-                {
-                    WriteStatus("Đang chờ kết nối thiết bị...", "Vui lòng mở giả lập LDPlayer");
-                    await Task.Delay(2000, token);
-                    continue;
-                }
-
+                // ====================================================================
+                // PHẦN 1 (PHASE A): VÒNG KHỞI ĐẦU ĐẦU TIÊN (Chỉ lặp lại khi vừa ĐÀO ĐƯỢC kho báu)
+                // Mở hành trang -> Sử dụng Bản đồ 2 (ban_do_kho_bao2.png)
+                // ====================================================================
                 ClearStatusLines();
-                WriteLog("🎬 [Vòng Lặp Chính] Bắt đầu chu trình quét mới...", ConsoleColor.Magenta);
+                WriteLog("🎬 [PHASE A] Sử dụng Bản đồ số 2 (ban_do_kho_bao2.png) để nhận mốc Kho Báu mới...", ConsoleColor.Magenta);
 
-                // ==========================================
-                // BƯỚC 1: SỬ DỤNG XẺNG ĐÀO (Sử dụng 1 -> Sử dụng 2)
-                // ==========================================
-                bool isShovelUsed = await OpenBagAndUseItem(token, screenPath, bagTemplate, shovelTemplate, null, useTemplate1, useTemplate2, stopScrollTemplate, "Xẻng đào");
-                if (!isShovelUsed)
+                // Mở rương và sử dụng bản đồ 2 (Sử dụng 1 -> Sử dụng 2)
+                bool isMap2Used = await OpenBagAndUseItem(token, GetScreenMat(), bagTemplate, mapTemplate2, null, useTemplate1, useTemplate2, stopScrollTemplate, "Bản đồ kho báu 2");
+                if (!isMap2Used)
                 {
-                    WriteLog("❌ Lỗi: Tiến trình sử dụng Xẻng đào thất bại! Thử lại sau 3 giây...", ConsoleColor.Red);
+                    WriteLog("❌ [Lỗi] Không thể kích hoạt Bản đồ số 2. Đợi 3 giây quét lại...", ConsoleColor.Red);
                     await Task.Delay(3000, token);
-                    continue;
+                    continue; // Quay lại bắt đầu Phase A
                 }
 
-                // KIỂM TRA ĐÀO THÀNH CÔNG: Nếu sau 10 giây không thấy nút ok_final.png hiện lên -> Chúc mừng!
-                if (isTreasureFound)
-                {
-                    WriteLog("🎉 [KẾT QUẢ] ĐÀO KHO BÁU THÀNH CÔNG! Đang dọn dẹp các bảng thông báo chúc mừng...", ConsoleColor.Green);
+                WriteLog("👉 Hoàn thành Phase A: Đã sử dụng Bản đồ 2! Bắt đầu chu trình dò tìm bằng Xẻng...", ConsoleColor.Green);
+                await Task.Delay(1000, token);
 
-                    // 1. Tìm và click đóng nút ok_final.png trước tiên
-                    CaptureScreen(screenPath);
-                    string okFinalTemplate = Path.Combine(imageFolder, "ok_final.png");
-                    System.Drawing.Point? okFinalLocation = FindTemplate(screenPath, okFinalTemplate);
-                    if (okFinalLocation != null)
+                // ====================================================================
+                // PHẦN 2 (PHASE B): VÒNG LẶP DÒ TÌM (Lặp từ nãy tới giờ)
+                // Liên tục đào bằng Xẻng -> Đọc hướng đi -> Di chuyển -> Lặp lại đến khi thấy rương
+                // ====================================================================
+                bool searching = true;
+                int shovelCount = 1;
+
+                while (searching && !token.IsCancellationRequested)
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    WriteLog($"🔄 [PHASE B] [Quét Xẻng] Tiến hành Đào bằng Xẻng lần thứ {shovelCount}...", ConsoleColor.Cyan);
+
+                    // Mở rương và sử dụng Xẻng đào (xeng_dao.png) (Sử dụng 1 -> Sử dụng 2)
+                    bool isShovelUsed = await OpenBagAndUseItem(token, GetScreenMat(), bagTemplate, shovelTemplate, null, useTemplate1, useTemplate2, stopScrollTemplate, "Xẻng đào");
+                    if (!isShovelUsed)
                     {
-                        WriteLog($"✅ Bấm đóng nút thành công [ok_final.png] tại: X={okFinalLocation.Value.X}, Y={okFinalLocation.Value.Y}", ConsoleColor.Green);
-                        Tap(okFinalLocation.Value.X, okFinalLocation.Value.Y);
-                        await Task.Delay(500, token); // Đợi bảng 1 đóng hoàn toàn
+                        WriteLog($"❌ Lỗi: Tiến trình sử dụng Xẻng đào thất bại! Thử lại sau 3 giây...", ConsoleColor.Red);
+                        await Task.Delay(3000, token);
+                        continue;
                     }
 
-                    // 2. Chụp quét và click tiếp nút Đóng dong_dong.png ngay sau đó
-                    CaptureScreen(screenPath);
-                    System.Drawing.Point? closeLoc = FindTemplate(screenPath, closeTemplate);
-                    if (closeLoc != null)
+                    // KIỂM TRA ĐÀO THÀNH CÔNG: Nếu sau 10 giây không thấy nút ok_final.png hiện lên -> Chúc mừng!
+                    if (isTreasureFound)
                     {
-                        WriteLog($"✅ Bấm đóng bảng phụ rương đồ [dong_dong.png] tại: X={closeLoc.Value.X}, Y={closeLoc.Value.Y}", ConsoleColor.Green);
-                        Tap(closeLoc.Value.X, closeLoc.Value.Y);
-                        await Task.Delay(500, token); // Đợi bảng 2 đóng hoàn toàn
-                    }
+                        WriteLog("🎉 [KẾT QUẢ] ĐÀO KHO BÁU THÀNH CÔNG! Đang dọn dẹp các bảng thông báo chúc mừng...", ConsoleColor.Green);
 
-                    WriteLog("⏸️ Hệ thống dừng chờ đúng 15.0 giây để bạn nhặt rương đồ trước khi sang chu kỳ mới...", ConsoleColor.Green);
-                    await Task.Delay(15000, token); // Treo máy chờ nhặt đồ 15 giây
-                    isTreasureFound = false; // Reset trạng thái
-                    continue; // Quay lại từ đầu chu trình mới
-                }
-
-                // ==========================================
-                // BƯỚC 2: THỰC THI DI CHUYỂN PHỦ BẢN ĐỒ HÌNH VUÔNG X2 LẦN THEO HƯỚNG QUÉT ĐƯỢC TỪ OCR
-                // ==========================================
-                if (nextDirection == 1) // HƯỚNG BÊN TRÁI
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển phủ map bên TRÁI x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Chạy sang TRÁI 1.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_LEFT, 1000);
-                        await Task.Delay(200, token);
-
-                        WriteLog($"   => [Lần {i + 1}/2] Nhảy chéo LÊN + TRÁI 1.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_UP, VK_LEFT, 1000);
-                        await Task.Delay(200, token);
-
-                        WriteLog($"   => [Lần {i + 1}/2] Nhảy LÊN bám dây 1.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_UP, 1000);
-                        await Task.Delay(200, token);
-
-                        HoldKeysTogether(VK_UP, VK_RIGHT, 500); // Tránh kẹt
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 2) // HƯỚNG TRÁI PHÍA DƯỚI
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển bên TRÁI PHÍA DƯỚI x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ XUỐNG + TRÁI cùng lúc 2.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_DOWN, VK_LEFT, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 3) // HƯỚNG PHÍA TRÊN
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ nhảy LÊN thẳng đứng x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN thẳng đứng 2.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_UP, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 4) // HƯỚNG BÊN PHẢI
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển phủ map bên PHẢI x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Chạy sang PHẢI 1.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_RIGHT, 1000);
-                        await Task.Delay(200, token);
-
-                        WriteLog($"   => [Lần {i + 1}/2] Nhảy chéo LÊN + PHẢI 1.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_UP, VK_RIGHT, 1000);
-                        await Task.Delay(200, token);
-
-                        WriteLog($"   => [Lần {i + 1}/2] Nhảy LÊN bám dây 1.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_UP, 1000);
-                        await Task.Delay(200, token);
-
-                        HoldKeysTogether(VK_UP, VK_LEFT, 500); // Tránh kẹt
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 5) // HƯỚNG PHẢI PHÍA DƯỚI
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển bên PHẢI PHÍA DƯỚI x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ XUỐNG + PHẢI cùng lúc 2.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_DOWN, VK_RIGHT, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 6) // HƯỚNG PHÍA DƯỚI (Mới bổ sung theo yêu cầu)
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển PHÍA DƯỚI x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím Mũi tên XUỐNG 2.0 giây...", ConsoleColor.Blue);
-                        SendBackgroundKey(VK_DOWN, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 7) // HƯỚNG TRÁI PHÍA TRÊN (Mới rẽ nhánh)
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển chéo TRÁI PHÍA TRÊN x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN + TRÁI 2.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_UP, VK_LEFT, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else if (nextDirection == 8) // HƯỚNG PHẢI PHÍA TRÊN (Mới rẽ nhánh)
-                {
-                    WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển chéo PHẢI PHÍA TRÊN x2 lần...", ConsoleColor.Blue);
-                    for (int i = 0; i < 2; i++)
-                    {
-                        WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN + PHẢI 2.0 giây...", ConsoleColor.Blue);
-                        HoldKeysTogether(VK_UP, VK_RIGHT, 2000);
-                        await Task.Delay(500, token);
-                    }
-                }
-                else // KHÔNG KHỚP HƯỚNG NÀO -> DI CHUYỂN RANDOM NGẪU NHIÊN CỨU KẸT
-                {
-                    WriteLog("🎲 Kích hoạt Di chuyển NGẪU NHIÊN để dò đường...", ConsoleColor.Yellow);
-                    Random rand = new Random();
-                    int randomAction = rand.Next(0, 3);
-
-                    for (int i = 0; i < 2; i++)
-                    {
-                        if (randomAction == 0)
+                        // 1. Tìm và click đóng nút ok_final.png trước tiên từ RAM
+                        using (Mat okFinalScreen = GetScreenMat())
                         {
-                            WriteLog($"🎲 [Ngẫu nhiên - Lần {i + 1}/2] Nhảy tránh kẹt sang TRÁI...", ConsoleColor.DarkGray);
-                            SendBackgroundKey(VK_LEFT, 1000);
-                            await Task.Delay(200, token);
-                            HoldKeysTogether(VK_UP, VK_LEFT, 1000);
-                            await Task.Delay(200, token);
-                            SendBackgroundKey(VK_UP, 1000);
-                            await Task.Delay(200, token);
-                            HoldKeysTogether(VK_UP, VK_RIGHT, 500);
+                            string okFinalTemplate = Path.Combine(imageFolder, "ok_final.png");
+                            System.Drawing.Point? okFinalLocation = FindTemplateInMat(okFinalScreen, okFinalTemplate);
+                            if (okFinalLocation != null)
+                            {
+                                WriteLog($"✅ Bấm đóng nút thành công [ok_final.png] tại: X={okFinalLocation.Value.X}, Y={okFinalLocation.Value.Y}", ConsoleColor.Green);
+                                Tap(okFinalLocation.Value.X, okFinalLocation.Value.Y);
+                                await Task.Delay(1000, token); // Đợi đóng
+                            }
                         }
-                        else if (randomAction == 1)
+
+                        // 2. Click tiếp nút Đóng dong_dong.png ngay sau đó từ RAM
+                        using (Mat closeScreen = GetScreenMat())
                         {
-                            WriteLog($"🎲 [Ngẫu nhiên - Lần {i + 1}/2] Nhảy tránh kẹt sang PHẢI...", ConsoleColor.DarkGray);
-                            SendBackgroundKey(VK_RIGHT, 1000);
-                            await Task.Delay(200, token);
-                            HoldKeysTogether(VK_UP, VK_RIGHT, 1000);
-                            await Task.Delay(200, token);
-                            SendBackgroundKey(VK_UP, 1000);
-                            await Task.Delay(200, token);
-                            HoldKeysTogether(VK_UP, VK_LEFT, 500);
+                            System.Drawing.Point? closeLoc = FindTemplateInMat(closeScreen, closeTemplate);
+                            if (closeLoc != null)
+                            {
+                                WriteLog($"✅ Bấm đóng bảng phụ rương đồ [dong_dong.png] tại: X={closeLoc.Value.X}, Y={closeLoc.Value.Y}", ConsoleColor.Green);
+                                Tap(closeLoc.Value.X, closeLoc.Value.Y);
+                                await Task.Delay(1000, token);
+                            }
+                        }
+
+                        // Tự động reset và dừng chờ đúng 7.0 giây để bạn nhặt đồ
+                        WriteLog("⏸️ Hệ thống dừng chờ đúng 7.0 giây để bạn nhặt rương đồ...", ConsoleColor.Green);
+                        await Task.Delay(7000, token); // Chờ 7 giây
+
+                        // Khôi phục bộ nhớ tạm thời chống kẹt
+                        isTreasureFound = false;
+                        sameDirectionCount = 0;
+                        previousDirection = -1;
+
+                        searching = false; // Thoát khỏi Vòng lặp Xẻng (Phase B) để QUAY LẠI SỬ DỤNG BẢN ĐỒ 2 (Phase A)!
+                        break;
+                    }
+
+                    // ==========================================
+                    // BỘ LỌC CHỐNG KẸT ĐỊA HÌNH: PHÁT HIỆN LẶP HƯỚNG 3 LẦN
+                    // ==========================================
+                    if (nextDirection != 0)
+                    {
+                        if (nextDirection == previousDirection)
+                        {
+                            sameDirectionCount++;
+                            WriteLog($"⚠️ Cảnh báo kẹt: Phát hiện hướng đi lặp lại lần thứ {sameDirectionCount}/3.", ConsoleColor.Yellow);
                         }
                         else
                         {
-                            WriteLog($"🎲 [Ngẫu nhiên - Lần {i + 1}/2] Nhảy thẳng đứng LÊN bậc thềm...", ConsoleColor.DarkGray);
+                            sameDirectionCount = 1;
+                            previousDirection = nextDirection;
+                        }
+
+                        if (sameDirectionCount >= 3)
+                        {
+                            WriteLog("🛑 [PHÁT HIỆN KẸT GÓC] Hướng đi bị lặp lại 3 lần liên tiếp! Ép buộc di chuyển NGẪU NHIÊN để thoát kẹt...", ConsoleColor.Red);
+                            nextDirection = 0;
+                            sameDirectionCount = 0;
+                            previousDirection = -1;
+                        }
+                    }
+                    else
+                    {
+                        sameDirectionCount = 0;
+                        previousDirection = -1;
+                    }
+
+                    // ==========================================
+                    // BƯỚC 2: THỰC THI DI CHUYỂN PHỦ BẢN ĐỒ HÌNH VUÔNG X2 LẦN THEO HƯỚNG QUÉT ĐƯỢC TỪ OCR
+                    // ==========================================
+                    if (nextDirection == 1) // HƯỚNG BÊN TRÁI
+                    {
+                        WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển phủ map bên TRÁI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Chạy sang TRÁI 1.0 giây...", ConsoleColor.Blue);
+                            SendBackgroundKey(VK_LEFT, 1000);
+                            await Task.Delay(200, token);
+
+                            WriteLog($"   => [Lần {i + 1}/2] Nhảy chéo LÊN + TRÁI 1.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_UP, VK_LEFT, 1000);
+                            await Task.Delay(200, token);
+
+                            WriteLog($"   => [Lần {i + 1}/2] Nhảy LÊN bám dây 1.0 giây...", ConsoleColor.Blue);
+                            SendBackgroundKey(VK_UP, 1000);
+                            await Task.Delay(200, token);
+
+                            HoldKeysTogether(VK_UP, VK_RIGHT, 500); // Tránh kẹt
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 2) // HƯỚNG TRÁI PHÍA DƯỚI
+                    {
+                        WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển bên TRÁI PHÍA DƯỚI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ XUỐNG + TRÁI cùng lúc 2.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_DOWN, VK_LEFT, 2000);
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 3) // HƯỚNG PHÍA TRÊN
+                    {
+                        WriteLog("🏃 [Di Chuyển] Nhấn giữ nhảy LÊN thẳng đứng x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN thẳng đứng 2.0 giây...", ConsoleColor.Blue);
                             SendBackgroundKey(VK_UP, 2000);
                             await Task.Delay(500, token);
                         }
+                    }
+                    else if (nextDirection == 4) // HƯỚNG BÊN PHẢI
+                    {
+                        WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển phủ map bên PHẢI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Chạy sang PHẢI 1.0 giây...", ConsoleColor.Blue);
+                            SendBackgroundKey(VK_RIGHT, 1000);
+                            await Task.Delay(200, token);
+
+                            WriteLog($"   => [Lần {i + 1}/2] Nhảy chéo LÊN + PHẢI 1.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_UP, VK_RIGHT, 1000);
+                            await Task.Delay(200, token);
+
+                            WriteLog($"   => [Lần {i + 1}/2] Nhảy LÊN bám dây 1.0 giây...", ConsoleColor.Blue);
+                            SendBackgroundKey(VK_UP, 1000);
+                            await Task.Delay(200, token);
+
+                            HoldKeysTogether(VK_UP, VK_LEFT, 500); // Tránh kẹt
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 5) // HƯỚNG PHẢI PHÍA DƯỚI
+                    {
+                        WriteLog("🏃 [Di Chuyển] Nhấn giữ di chuyển bên PHẢI PHÍA DƯỚI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ XUỐNG + PHẢI cùng lúc 2.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_DOWN, VK_RIGHT, 2000);
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 6) // HƯỚNG PHÍA DƯỚI
+                    {
+                        WriteLog("   => Hướng đi: PHÍA DƯỚI -> Nhấn giữ phím Mũi tên XUỐNG 2.0 giây x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím di chuyển XUỐNG 2.0 giây...", ConsoleColor.Blue);
+                            SendBackgroundKey(VK_DOWN, 2000);
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 7) // HƯỚNG TRÁI PHÍA TRÊN
+                    {
+                        WriteLog("   => Hướng đi: TRÁI PHÍA TRÊN -> Nhấn giữ nhảy LÊN + TRÁI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN + TRÁI 2.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_UP, VK_LEFT, 2000);
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else if (nextDirection == 8) // HƯỚNG PHẢI PHÍA TRÊN
+                    {
+                        WriteLog("   => Hướng đi: PHẢI PHÍA TRÊN -> Nhấn giữ nhảy LÊN + PHẢI x2 lần...", ConsoleColor.Blue);
+                        for (int i = 0; i < 2; i++)
+                        {
+                            WriteLog($"   => [Lần {i + 1}/2] Nhấn giữ phím nhảy LÊN + PHẢI 2.0 giây...", ConsoleColor.Blue);
+                            HoldKeysTogether(VK_UP, VK_RIGHT, 2000);
+                            await Task.Delay(500, token);
+                        }
+                    }
+                    else // KHÔNG KHỚP HƯỚNG NÀO / HOẶC BỊ KẸT LẶP 3 LẦN -> DI CHUYỂN RANDOM TỐI GIẢN (KHÔNG QUÁ 3 BƯỚC)
+                    {
+                        // TỐI ƯU MỚI: Giảm mò đường tránh kẹt xuống tối đa 3 bước nhỏ chạy nhảy liên tiếp đúng 1.5 giây
+                        WriteLog("🎲 Kích hoạt Di chuyển NGẪU NHIÊN TỐI GIẢN (Tối đa 3 bước nhỏ) để tránh bị kẹt góc...", ConsoleColor.Yellow);
+                        Random rand = new Random();
+                        int randomAction = rand.Next(0, 3);
+
+                        if (randomAction == 0) // Di chuyển 3 bước nhỏ sang bên TRÁI
+                        {
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 1: Nhấn giữ sang TRÁI 0.5s...", ConsoleColor.DarkGray);
+                            SendBackgroundKey(VK_LEFT, 500);
+                            await Task.Delay(100, token);
+
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 2: Nhảy chéo LÊN + TRÁI 0.5s...", ConsoleColor.DarkGray);
+                            HoldKeysTogether(VK_UP, VK_LEFT, 500);
+                            await Task.Delay(100, token);
+
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 3: Nhảy bật lùi LÊN + PHẢI né kẹt 0.5s...", ConsoleColor.DarkGray);
+                            HoldKeysTogether(VK_UP, VK_RIGHT, 500);
+                        }
+                        else if (randomAction == 1) // Di chuyển 3 bước nhỏ sang bên PHẢI
+                        {
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 1: Nhấn giữ sang PHẢI 0.5s...", ConsoleColor.DarkGray);
+                            SendBackgroundKey(VK_RIGHT, 500);
+                            await Task.Delay(100, token);
+
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 2: Nhảy chéo LÊN + PHẢI 0.5s...", ConsoleColor.DarkGray);
+                            HoldKeysTogether(VK_UP, VK_RIGHT, 500);
+                            await Task.Delay(100, token);
+
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 3: Nhảy bật lùi LÊN + TRÁI né kẹt 0.5s...", ConsoleColor.DarkGray);
+                            HoldKeysTogether(VK_UP, VK_LEFT, 500);
+                        }
+                        else // Nhảy thẳng đứng LÊN
+                        {
+                            WriteLog("🎲 [Ngẫu nhiên] Bước 1: Nhảy thẳng đứng LÊN 1.5s bám dây...", ConsoleColor.DarkGray);
+                            SendBackgroundKey(VK_UP, 1500);
+                        }
+
                         await Task.Delay(500, token);
                     }
-                }
 
-                // Khoảng nghỉ cuối vòng lặp đúng 3 giây
-                WriteLog("🔄 Hoàn thành vòng lặp. Nghỉ 3.0 giây chuẩn bị lặp lại...", ConsoleColor.DarkGray);
-                await Task.Delay(3000, token);
+                    // Khoảng nghỉ giữa các lần quét xẻng trong Phase B
+                    WriteLog("🔄 Chu chuẩn bị quét đào lượt Xẻng tiếp theo...", ConsoleColor.DarkGray);
+                    await Task.Delay(1000, token);
+                    shovelCount++;
+                }
             }
         }
 
-        // HÀM HỖ TRỢ: Thực hiện mở hành trang -> Cuộn tìm Item -> Click sử dụng 1 -> Click sử dụng 2 -> Quét hướng đi -> Tắt bảng liên tiếp
-        private static async Task<bool> OpenBagAndUseItem(CancellationToken token, string screenPath, string bagTemplate, string itemTemplate1, string itemTemplate2, string useTemplate1, string useTemplate2, string stopScrollTemplate, string itemName)
+        // HÀM HỖ TRỢ: Thực hiện mở hành trang -> Cuộn tìm Item -> Click sử dụng 1 -> Click sử dụng 2 -> Quét hướng đi -> Tắt bảng liên tiếp (TẤT CẢ TRÊN RAM)
+        private static async Task<bool> OpenBagAndUseItem(CancellationToken token, Mat initialScreen, string bagTemplate, string itemTemplate1, string itemTemplate2, string useTemplate1, string useTemplate2, string stopScrollTemplate, string itemName)
         {
             // TRƯỚC KHI MỞ HÀNH TRANG: Check dọn dẹp quảng cáo hoặc bảng lỗi dong_dong.png trước tiên
             string closeTemplateLocal = Path.Combine(imageFolder, "dong_dong.png");
-            CheckAndDismissCloseButton(screenPath, closeTemplateLocal);
-
-            CaptureScreen(screenPath);
+            await CheckAndDismissCloseButton(token, closeTemplateLocal);
 
             // Kiểm tra xem vật phẩm đã hiển thị sẵn trên màn hình chưa (hành trang đã mở sẵn từ bước trước)
-            System.Drawing.Point? itemLocation = FindTemplate(screenPath, itemTemplate1);
+            System.Drawing.Point? itemLocation = FindTemplateInMat(initialScreen, itemTemplate1);
             if (itemLocation == null && !string.IsNullOrEmpty(itemTemplate2))
             {
-                itemLocation = FindTemplate(screenPath, itemTemplate2);
+                itemLocation = FindTemplateInMat(initialScreen, itemTemplate2);
             }
 
             bool isBagAlreadyOpen = itemLocation != null;
@@ -385,7 +447,7 @@ namespace NinjaSchoolConsoleTool
             if (!isBagAlreadyOpen)
             {
                 // Nếu chưa mở hành trang, tìm nút để click mở
-                System.Drawing.Point? bagLocation = FindTemplate(screenPath, bagTemplate);
+                System.Drawing.Point? bagLocation = FindTemplateInMat(initialScreen, bagTemplate);
 
                 // TỰ GIẢI CỨU KHI KẸT KHI KHÔNG TÌM THẤY NÚT HÀNH TRANG
                 if (bagLocation == null)
@@ -399,23 +461,27 @@ namespace NinjaSchoolConsoleTool
                         switch (randomDir)
                         {
                             case 0:
-                                WriteLog("🎲 [Giải vây] Nhấn giữ phím mũi tên TRÁI 1.0 giây...", ConsoleColor.DarkGray);
-                                SendBackgroundKey(VK_LEFT, 1000);
+                                // TỐI ƯU MỚI: Tăng thời gian di chuyển giải vây lên 1.5s (1500ms) để thoát góc kẹt mượt mà
+                                WriteLog("🎲 [Giải vây] Nhấn giữ phím mũi tên TRÁI 1.5 giây...", ConsoleColor.DarkGray);
+                                SendBackgroundKey(VK_LEFT, 1500);
                                 break;
                             case 1:
-                                WriteLog("🎲 [Giải vây] Nhấn giữ phím mũi tên PHẢI 1.0 giây...", ConsoleColor.DarkGray);
-                                SendBackgroundKey(VK_RIGHT, 1000);
+                                WriteLog("🎲 [Giải vây] Nhấn giữ phím mũi tên PHẢI 1.5 giây...", ConsoleColor.DarkGray);
+                                SendBackgroundKey(VK_RIGHT, 1500);
                                 break;
                             case 2:
-                                WriteLog("🎲 [Giải vây] Nhấn giữ phím nhảy LÊN 1.0 giây...", ConsoleColor.DarkGray);
-                                SendBackgroundKey(VK_UP, 1000);
+                                WriteLog("🎲 [Giải vây] Nhấn giữ phím nhảy LÊN 1.5 giây...", ConsoleColor.DarkGray);
+                                SendBackgroundKey(VK_UP, 1500);
                                 break;
                         }
 
                         await Task.Delay(1000, token);
 
-                        CaptureScreen(screenPath);
-                        bagLocation = FindTemplate(screenPath, bagTemplate);
+                        // Chụp màn hình mới thẳng lên RAM
+                        using (Mat tempScreen = GetScreenMat())
+                        {
+                            bagLocation = FindTemplateInMat(tempScreen, bagTemplate);
+                        }
                     }
 
                     WriteLog("✅ Đã khôi phục thành công! Phát hiện thấy nút Hành trang. Tiếp tục Flow...", ConsoleColor.Green);
@@ -433,38 +499,45 @@ namespace NinjaSchoolConsoleTool
             // 2. Cuộn tìm kiếm vật phẩm
             int scrollTimes = 1;
             bool reachedEnd = false;
+            System.Drawing.Point? finalItemLocation = null;
 
             while (!reachedEnd)
             {
-                CaptureScreen(screenPath);
-
-                // Quét tìm vật phẩm mẫu 1
-                itemLocation = FindTemplate(screenPath, itemTemplate1);
-                bool isTemplate1 = itemLocation != null;
-
-                // Nếu có vật phẩm mẫu 2 dự phòng và chưa tìm thấy mẫu 1, quét tìm tiếp mẫu 2
-                if (itemLocation == null && !string.IsNullOrEmpty(itemTemplate2))
+                using (Mat currentScreen = GetScreenMat())
                 {
-                    itemLocation = FindTemplate(screenPath, itemTemplate2);
+                    // Quét tìm vật phẩm mẫu 1
+                    finalItemLocation = FindTemplateInMat(currentScreen, itemTemplate1);
+                    bool isTemplate1 = finalItemLocation != null;
+
+                    // Nếu có vật phẩm mẫu 2 dự phòng và chưa tìm thấy mẫu 1, quét tìm tiếp mẫu 2
+                    if (finalItemLocation == null && !string.IsNullOrEmpty(itemTemplate2))
+                    {
+                        finalItemLocation = FindTemplateInMat(currentScreen, itemTemplate2);
+                    }
+
+                    if (finalItemLocation != null)
+                    {
+                        string finalName = isTemplate1 ? itemName + " 1" : itemName + " 2 (Dự phòng)";
+                        WriteLog($"🎯 Đã quét tìm thấy [{finalName}] trong hành trang!", ConsoleColor.Green);
+                        break;
+                    }
+
+                    // Kiểm tra xem đã cuộn chạm mốc dừng túi chưa
+                    System.Drawing.Point? stopLocation = FindTemplateInMat(currentScreen, stopScrollTemplate);
+                    if (stopLocation != null)
+                    {
+                        WriteLog("🛑 Chạm mốc ranh giới dừng túi (dung_tui.png). Ngừng cuộn đồ!", ConsoleColor.Yellow);
+                        reachedEnd = true;
+                        break;
+                    }
                 }
 
-                if (itemLocation != null)
+                // TỐI ƯU MỚI: Chỉ cuộn hành trang tối đa 10 lần
+                if (scrollTimes > 10)
                 {
-                    string finalName = isTemplate1 ? itemName + " 1" : itemName + " 2 (Dự phòng)";
-                    WriteLog($"🎯 Đã quét tìm thấy [{finalName}] trong hành trang!", ConsoleColor.Green);
+                    WriteLog($"⚠️ Cảnh báo: Đã cuộn quá 10 lần mà không tìm thấy [{itemName}]. Tự động dừng.", ConsoleColor.Yellow);
                     break;
                 }
-
-                // Kiểm tra xem đã cuộn chạm mốc dừng túi chưa
-                System.Drawing.Point? stopLocation = FindTemplate(screenPath, stopScrollTemplate);
-                if (stopLocation != null)
-                {
-                    WriteLog("🛑 Chạm mốc ranh giới dừng túi (dung_tui.png). Ngừng cuộn đồ!", ConsoleColor.Yellow);
-                    reachedEnd = true;
-                    break;
-                }
-
-                if (scrollTimes > 25) break;
 
                 WriteLog($"👇 Chưa thấy [{itemName}], đang cuộn rương xuống dưới bằng phím XUỐNG ẩn (Lần thứ {scrollTimes})...", ConsoleColor.Yellow);
                 ScrollInventoryDown();
@@ -472,28 +545,32 @@ namespace NinjaSchoolConsoleTool
                 scrollTimes++;
             }
 
-            if (itemLocation == null) return false;
+            if (finalItemLocation == null) return false;
 
             // Click vào vật phẩm vừa quét thấy
-            Tap(itemLocation.Value.X, itemLocation.Value.Y);
+            Tap(finalItemLocation.Value.X, finalItemLocation.Value.Y);
             await Task.Delay(500, token);
 
             // 3. Click Sử dụng 1 (su_dung.png)
-            CaptureScreen(screenPath);
-            System.Drawing.Point? useLocation = FindTemplate(screenPath, useTemplate1);
-            if (useLocation == null) return false;
+            using (Mat currentScreen = GetScreenMat())
+            {
+                System.Drawing.Point? useLocation = FindTemplateInMat(currentScreen, useTemplate1);
+                if (useLocation == null) return false;
 
-            WriteLog($"⚡ Click 'Sử dụng 1' tại: X={useLocation.Value.X}, Y={useLocation.Value.Y}...", ConsoleColor.DarkGray);
-            Tap(useLocation.Value.X, useLocation.Value.Y);
+                WriteLog($"⚡ Click 'Sử dụng 1' tại: X={useLocation.Value.X}, Y={useLocation.Value.Y}...", ConsoleColor.DarkGray);
+                Tap(useLocation.Value.X, useLocation.Value.Y);
+            }
             await Task.Delay(800, token);
 
             // 4. Click Sử dụng 2 (su_dung2.png)
-            CaptureScreen(screenPath);
-            System.Drawing.Point? use2Location = FindTemplate(screenPath, useTemplate2);
-            if (use2Location == null) return false;
+            using (Mat currentScreen = GetScreenMat())
+            {
+                System.Drawing.Point? use2Location = FindTemplateInMat(currentScreen, useTemplate2);
+                if (use2Location == null) return false;
 
-            WriteLog($"⚡ Click 'Sử dụng 2' tại: X={use2Location.Value.X}, Y={use2Location.Value.Y}...", ConsoleColor.DarkGray);
-            Tap(use2Location.Value.X, use2Location.Value.Y);
+                WriteLog($"⚡ Click 'Sử dụng 2' tại: X={use2Location.Value.X}, Y={use2Location.Value.Y}...", ConsoleColor.DarkGray);
+                Tap(use2Location.Value.X, use2Location.Value.Y);
+            }
             await Task.Delay(1000, token); // Đợi bảng thông báo hiện lên
 
             // Check tiếp nút ok_final.png hoặc dong_dong.png phụ xuất hiện trong quá trình mở Xẻng
@@ -505,48 +582,52 @@ namespace NinjaSchoolConsoleTool
                 bool okFinalDetected = false;
                 nextDirection = 0; // Reset hướng đi mặc định
 
-                // TỐI ƯU MỚI: Tăng thời gian chờ quét nút lên 10.0 giây (20 lần quét, mỗi lần cách nhau 500ms)
-                WriteLog("⏱️ Đang kiểm tra quét tìm tệp ảnh thông báo [ok_final.png] trong 10.0 giây...", ConsoleColor.DarkGray);
+                // Chờ quét nút lên đến 10.0 giây (20 lần quét, mỗi lần cách nhau 500ms)
+                WriteLog("⏱️ Đang kiểm tra quét tìm tệp ảnh thông báo [ok_final.png] trong 10.0 giây trên RAM...", ConsoleColor.DarkGray);
 
                 for (int checkCount = 0; checkCount < 20; checkCount++) // 20 lần * 500ms = 10 giây
                 {
-                    CaptureScreen(screenPath);
-                    System.Drawing.Point? okFinalLocation = FindTemplate(screenPath, okFinalTemplate);
-
-                    if (okFinalLocation != null)
+                    using (Mat currentScreen = GetScreenMat())
                     {
-                        okFinalDetected = true;
-                        WriteLog($"🎯 Đã quét phát hiện thấy bảng thông báo chỉ hướng [ok_final.png]!", ConsoleColor.Green);
+                        System.Drawing.Point? okFinalLocation = FindTemplateInMat(currentScreen, okFinalTemplate);
 
-                        // TỐI ƯU HÓA: QUÉT TOÀN MÀN HÌNH GAME (Bên Trái, Bên Phải, Phía Trên, Phía Dưới)
-                        WriteLog("📖 Đang phân tích chữ chỉ hướng trên toàn màn hình bằng OCR nhị phân...", ConsoleColor.DarkGray);
-                        string textResult = RecognizeText(screenPath); // Truyền trực tiếp ảnh gốc màn hình
-
-                        if (!string.IsNullOrEmpty(textResult))
+                        if (okFinalLocation != null)
                         {
-                            WriteLog($"📝 OCR Nhận diện thành công! Nội dung chỉ dẫn: {textResult}", ConsoleColor.Cyan);
-                            ParseOcrDirection(textResult); // Tự động rẽ nhánh hướng đi
-                        }
-                        else
-                        {
-                            WriteLog("⚠️ OCR không đọc được hướng đi nào rõ ràng.", ConsoleColor.Yellow);
-                        }
+                            okFinalDetected = true;
+                            WriteLog($"🎯 Đã quét phát hiện thấy bảng thông báo chỉ hướng [ok_final.png]!", ConsoleColor.Green);
 
-                        // SAU KHI ĐỌC HƯỚNG XONG, TIẾN HÀNH ĐÓNG BẢNG LIÊN TIẾP CHUẨN XÁC: ok_final.png -> dong_dong.png
-                        WriteLog($"✅ Click đóng [ok_final.png] tại: X={okFinalLocation.Value.X}, Y={okFinalLocation.Value.Y}", ConsoleColor.Green);
-                        Tap(okFinalLocation.Value.X, okFinalLocation.Value.Y);
-                        await Task.Delay(500, token); // Chờ bảng 1 đóng
+                            // QUÉT TOÀN MÀN HÌNH GAME TRỰC TIẾP TỪ RAM - KHÔNG GHI THƯ MỤC Ổ CỨNG
+                            WriteLog("📖 Đang phân tích chữ chỉ hướng trên ảnh chụp RAM bằng OCR...", ConsoleColor.DarkGray);
+                            string textResult = RecognizeTextFromMat(currentScreen);
 
-                        // Quét tìm và đóng tiếp bảng rác dong_dong.png nếu xuất hiện
-                        CaptureScreen(screenPath);
-                        System.Drawing.Point? closeLoc = FindTemplate(screenPath, closeTemplate);
-                        if (closeLoc != null)
-                        {
-                            WriteLog($"✅ Click đóng bảng phụ [dong_dong.png] tại: X={closeLoc.Value.X}, Y={closeLoc.Value.Y}", ConsoleColor.Green);
-                            Tap(closeLoc.Value.X, closeLoc.Value.Y);
-                            await Task.Delay(500, token); // Chờ bảng 2 đóng hoàn toàn
+                            if (!string.IsNullOrEmpty(textResult))
+                            {
+                                WriteLog($"📝 OCR Nhận diện thành công! Nội dung chỉ dẫn: {textResult}", ConsoleColor.Cyan);
+                                ParseOcrDirection(textResult); // Tự động rẽ nhánh hướng đi
+                            }
+                            else
+                            {
+                                WriteLog("⚠️ OCR không đọc được hướng đi nào rõ ràng.", ConsoleColor.Yellow);
+                            }
+
+                            // SAU KHI ĐỌC HƯỚNG XONG, TIẾN HÀNH ĐÓNG BẢNG LIÊN TIẾP CHUẨN XÁC: ok_final.png -> dong_dong.png
+                            WriteLog($"✅ Click đóng [ok_final.png] tại: X={okFinalLocation.Value.X}, Y={okFinalLocation.Value.Y}", ConsoleColor.Green);
+                            Tap(okFinalLocation.Value.X, okFinalLocation.Value.Y);
+                            await Task.Delay(1000, token); // Đợi đóng bảng 1
+
+                            // Quét tìm và đóng tiếp bảng rác dong_dong.png nếu xuất hiện
+                            using (Mat nextScreen = GetScreenMat())
+                            {
+                                System.Drawing.Point? closeLoc = FindTemplateInMat(nextScreen, closeTemplate);
+                                if (closeLoc != null)
+                                {
+                                    WriteLog($"✅ Click đóng bảng phụ [dong_dong.png] tại: X={closeLoc.Value.X}, Y={closeLoc.Value.Y}", ConsoleColor.Green);
+                                    Tap(closeLoc.Value.X, closeLoc.Value.Y);
+                                    await Task.Delay(1000, token); // Đợi bảng 2 đóng hoàn toàn
+                                }
+                            }
+                            break;
                         }
-                        break;
                     }
 
                     await Task.Delay(500, token); // Đợi 500ms giữa mỗi lần quét
@@ -617,7 +698,7 @@ namespace NinjaSchoolConsoleTool
             }
             else if (text.Contains("dưới"))
             {
-                nextDirection = 6; // PHÍA DƯỚI
+                nextDirection = 6; // PHÍA DƯỚI (Mới bổ sung theo yêu cầu quét toàn màn hình)
             }
             else
             {
@@ -629,30 +710,32 @@ namespace NinjaSchoolConsoleTool
 
         #region Công cụ hỗ trợ Đóng bảng quảng cáo/thông báo (dong_dong.png)
 
-        // HÀM TỐI ƯU: Tự động check và click tắt bảng dong_dong.png trước mỗi tác vụ quan trọng
-        private static void CheckAndDismissCloseButton(string screenPath, string closeTemplate)
+        // HÀM TỐI ƯU: Tự động check và click tắt bảng dong_dong.png trước mỗi tác vụ quan trọng trực tiếp từ RAM
+        private static async Task CheckAndDismissCloseButton(CancellationToken token, string closeTemplate)
         {
-            CaptureScreen(screenPath);
-            System.Drawing.Point? closeLoc = FindTemplate(screenPath, closeTemplate);
-            if (closeLoc != null)
+            using (Mat screen = GetScreenMat())
             {
-                WriteLog("🧹 [Dọn dẹp] Phát hiện thấy bảng quảng cáo/thông báo che khuất [dong_dong.png]. Đang click đóng...", ConsoleColor.DarkGray);
-                Tap(closeLoc.Value.X, closeLoc.Value.Y);
-                Thread.Sleep(600); // Đợi bảng tắt hẳn
+                System.Drawing.Point? closeLoc = FindTemplateInMat(screen, closeTemplate);
+                if (closeLoc != null)
+                {
+                    WriteLog("🧹 [Dọn dẹp] Phát hiện thấy bảng quảng cáo/thông báo che khuất [dong_dong.png]. Đang click đóng...", ConsoleColor.DarkGray);
+                    Tap(closeLoc.Value.X, closeLoc.Value.Y);
+                    await Task.Delay(1000, token); // Đợi bảng tắt hẳn
+                }
             }
         }
 
-        // HÀM TỐI ƯU: Quét tìm đồng thời nút OK hoặc nút Đóng (dong_dong.png) để click đóng bảng chỉ hướng
-        private static bool ClickOkOrCloseButton(string screenPath, string okTemplate, string closeTemplate)
+        // HÀM TỐI ƯU: Quét tìm đồng thời nút OK hoặc nút Đóng (dong_dong.png) để click đóng bảng chỉ hướng trực tiếp từ RAM
+        private static bool ClickOkOrCloseButton(Mat screen, string okTemplate, string closeTemplate)
         {
-            System.Drawing.Point? okLoc = FindTemplate(screenPath, okTemplate);
+            System.Drawing.Point? okLoc = FindTemplateInMat(screen, okTemplate);
             if (okLoc != null)
             {
                 Tap(okLoc.Value.X, okLoc.Value.Y);
                 return true;
             }
 
-            System.Drawing.Point? closeLoc = FindTemplate(screenPath, closeTemplate);
+            System.Drawing.Point? closeLoc = FindTemplateInMat(screen, closeTemplate);
             if (closeLoc != null)
             {
                 Tap(closeLoc.Value.X, closeLoc.Value.Y);
@@ -851,17 +934,36 @@ namespace NinjaSchoolConsoleTool
 
         #endregion
 
-        #region Công cụ xử lý ngoại vi (ADB, OpenCV)
+        #region Công cụ xử lý ngoại vi chụp ảnh lên RAM bằng ADB Stream
 
-        private static void CaptureScreen(string savePath)
+        // TỐI ƯU CỰC ĐẠI: Truyền byte ảnh screencap trực tiếp từ ADB qua bộ nhớ RAM, bỏ qua lưu tệp ổ cứng SSD
+        private static byte[] CaptureScreenToMemory()
         {
-            try
+            if (string.IsNullOrEmpty(adbPath)) return null;
+
+            ProcessStartInfo psi = new ProcessStartInfo(adbPath, $"-s {deviceId} exec-out screencap -p")
             {
-                if (File.Exists(savePath)) File.Delete(savePath);
-                RunAdbCommand("shell screencap -p /sdcard/screen.png");
-                RunAdbCommand($"pull /sdcard/screen.png {savePath}");
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using (var process = Process.Start(psi))
+            using (var ms = new MemoryStream())
+            {
+                process.StandardOutput.BaseStream.CopyTo(ms);
+                process.WaitForExit();
+                return ms.ToArray();
             }
-            catch { }
+        }
+
+        // Giải mã mảng byte ảnh từ RAM thành biến ảnh Mat của OpenCV
+        private static Mat GetScreenMat()
+        {
+            byte[] rawBytes = CaptureScreenToMemory();
+            if (rawBytes == null || rawBytes.Length == 0) return null;
+            return Cv2.ImDecode(rawBytes, ImreadModes.Color);
         }
 
         private static void Tap(int x, int y)
@@ -885,18 +987,18 @@ namespace NinjaSchoolConsoleTool
             }
         }
 
-        private static System.Drawing.Point? FindTemplate(string screenPath, string templatePath)
+        // TỐI ƯU MỚI: So khớp ảnh mẫu trực tiếp trên ảnh RAM Mat screen
+        private static System.Drawing.Point? FindTemplateInMat(Mat screen, string templatePath)
         {
-            if (!File.Exists(templatePath) || !File.Exists(screenPath)) return null;
+            if (screen == null || screen.Empty() || !File.Exists(templatePath)) return null;
 
-            using (Mat screen = Cv2.ImRead(screenPath))
             using (Mat template = Cv2.ImRead(templatePath))
             using (Mat result = new Mat())
             {
                 Cv2.MatchTemplate(screen, template, result, TemplateMatchModes.CCoeffNormed);
                 Cv2.MinMaxLoc(result, out _, out double maxVal, out _, out OpenCvSharp.Point maxLoc);
 
-                // Tối ưu hóa: Giảm ngưỡng nhận diện xuống 0.75 (75%) để bỏ qua số lượng đè lên góc dưới ô đồ
+                // Độ nhạy nhận dạng 75% bỏ qua con số số lượng
                 if (maxVal >= 0.75)
                 {
                     return new System.Drawing.Point(maxLoc.X + template.Width / 2, maxLoc.Y + template.Height / 2);
@@ -905,32 +1007,34 @@ namespace NinjaSchoolConsoleTool
             return null;
         }
 
-        private static void CropImage(string sourcePath, string destPath, System.Drawing.Rectangle cropArea)
+        private static void CropImage(Mat src, string destPath, System.Drawing.Rectangle cropArea)
         {
-            if (!File.Exists(sourcePath)) return;
+            if (src == null || src.Empty()) return;
 
-            using (Mat src = Cv2.ImRead(sourcePath))
+            int x = Math.Max(0, cropArea.X);
+            int y = Math.Max(0, cropArea.Y);
+            int width = Math.Min(cropArea.Width, src.Cols - x);
+            int height = Math.Min(cropArea.Height, src.Rows - y);
+
+            using (Mat cropped = new Mat(src, new OpenCvSharp.Rect(x, y, width, height)))
             {
-                int x = Math.Max(0, cropArea.X);
-                int y = Math.Max(0, cropArea.Y);
-                int width = Math.Min(cropArea.Width, src.Cols - x);
-                int height = Math.Min(cropArea.Height, src.Rows - y);
-
-                using (Mat cropped = new Mat(src, new OpenCvSharp.Rect(x, y, width, height)))
-                {
-                    Cv2.ImWrite(destPath, cropped);
-                }
+                Cv2.ImWrite(destPath, cropped);
             }
         }
 
-        private static string RecognizeText(string imagePath)
+        // TỐI ƯU MỚI: Đọc trích xuất chữ OCR của tệp ảnh nạp trực tiếp từ bộ nhớ RAM
+        private static string RecognizeTextFromMat(Mat mat)
         {
-            if (!Directory.Exists(tessdataPath) || !File.Exists(imagePath)) return string.Empty;
+            if (mat == null || mat.Empty() || !Directory.Exists(tessdataPath)) return string.Empty;
 
             try
             {
+                // Mã hóa ảnh OpenCV Mat thành định dạng ảnh PNG lưu trong mảng byte RAM
+                Cv2.ImEncode(".png", mat, out byte[] buf);
+                if (buf == null || buf.Length == 0) return string.Empty;
+
                 using (var engine = new TesseractEngine(tessdataPath, "vie", EngineMode.Default))
-                using (var img = Pix.LoadFromFile(imagePath))
+                using (var img = Pix.LoadFromMemory(buf))
                 {
                     using (var page = engine.Process(img))
                     {
@@ -938,8 +1042,9 @@ namespace NinjaSchoolConsoleTool
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine($"Lỗi OCR RAM: {ex.Message}");
                 return string.Empty;
             }
         }
